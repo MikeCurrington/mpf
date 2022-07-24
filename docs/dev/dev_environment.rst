@@ -74,7 +74,7 @@ On Macs, you will need to uninstall and reinstall kivy in the the virtual envirm
 ::
 
     1) pip uninstall kivy
-    2) pip install kivy -no-binary :all:
+    2) pip install kivy --no-binary :all:
 
 Each time you'll work with your MPF development version you'll have to switch to this environment.
 
