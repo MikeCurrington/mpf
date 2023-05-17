@@ -131,6 +131,7 @@ mpf:
         light_segment_displays: mpf.platforms.light_segment_displays.LightSegmentDisplaysPlatform
         pin2dmd: mpf.platforms.pin2dmd.Pin2DmdHardwarePlatform
         visual_pinball_engine: mpf.platforms.visual_pinball_engine.visual_pinball_engine.VisualPinballEnginePlatform
+        canpin: mpf.platforms.canpin.canpin.CanPinHardwarePlatform
 
     paths:
         scriptlets: scriptlets
@@ -248,6 +249,9 @@ fadecandy:
     linear_cutoff: 0.0
     keyframe_interpolation: True
     dithering: True
+
+canpin:
+    ports: com3
 
 modes:
     - attract

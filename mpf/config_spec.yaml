@@ -349,6 +349,30 @@ fast_coils:
     hold_pwm_patter: single|str|None
 pkone_coils:
     recycle_ms: single|ms|None
+canpin:
+    __valid_in__: machine
+    __type__: config
+    debug: single|bool|false
+    #display_flash_frequency: single|float|1.0
+    #display_flash_duty: single|float|0.5
+    #disable_dtr: single|bool|true
+    #connection: single|enum(network,serial)|network
+    console_log: single|enum(none,basic,full)|none
+    file_log: single|enum(none,basic,full)|basic
+    #max_led_batch_size: single|int|12
+    #network_host: single|str|None
+    #network_port: single|int|None
+    poll_hz: single|int|10
+    ports: list|str|
+    baud: single|int|115200
+    #boards: dict|str:int|None
+    boards: dict|str:subconfig(canpin_board)|
+    #send_length_after_command: single|bool|false
+canpin_board:
+    board_index: single|int|
+    input_pins: list|int|None
+    output_pins: list|int|None
+    led_pins: list|int|None
 coil_player:
     __valid_in__: machine, mode, show
     __type__: config_player
