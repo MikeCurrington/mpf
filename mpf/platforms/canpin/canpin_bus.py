@@ -1,5 +1,6 @@
 """CanPin CanBus communicator."""
 import can
+import asyncio
 
 from mpf.platforms.canpin.canpin_rs232_intf import CanPinRs232Intf
 from mpf.platforms.base_serial_communicator import BaseSerialCommunicator, HEX_FORMAT
@@ -8,6 +9,13 @@ from mpf.core.utility_functions import Util
 MYPY = False
 if MYPY:    # pragma: no cover
     from mpf.platforms.canpin.canpin import CanPinHardwarePlatform   # pylint: disable-msg=cyclic-import,unused-import
+
+class CanPinMessage(can.Message):
+    def __init__(self, messageType, data):
+        super().__init__(is_extended_id=False)
+        self.arbitration_id = messageType
+        self.data = data
+
 
 class CanPinBusCommunicator(can.Listener):
 
@@ -21,15 +29,25 @@ class CanPinBusCommunicator(can.Listener):
     
         print("CanPinBusCommunicator port: " + str(port) + " baud: " + str(baud))
 
-        self.canbus = can.Bus(interface='can0', bustype='socketcan', ignore_config=False, receive_own_messages=False)
+        self.canbus = can.Bus(channel='can0', bustype='socketcan', ignore_config=False, receive_own_messages=True)
+        #self.canbus_notifier = can.Notifier(self.canbus, [printer, self])
+        #can.Message(arbitration_id=0x7de,data=[0, 25, 0, 1, 3, 1, 4, 1])
+
         self.platform = platform    # hint the right type
 
-    async def start_read_loop(self):
-        """Start the read loop."""
+    async def connect(self):
+
         printer = can.Printer()
         self.canbus_notifier = can.Notifier(self.canbus, [printer, self])
 
-        can.Message(arbitration_id=0x7de,data=[0, 25, 0, 1, 3, 1, 4, 1])
+        eCanBusMessage_DeviceReady = 1
+        self.canbus.send( CanPinMessage(eCanBusMessage_DeviceReady, [0,0,0,0]) )
+
+        asyncio.sleep(1)
+
+    async def start_read_loop(self):
+        """Start the read loop."""
+
 
     def on_message_received(self, msg):
         if not msg.is_error_frame and not msg.is_remote_frame:
@@ -250,52 +268,52 @@ class CanPinBusCommunicator(can.Listener):
                                          ((version_int >> 16) & 0xff), ((version_int >> 8) & 0xff),
                                          (version_int & 0xff)))
 
-    def lost_synch(self):
-        """Mark connection as desynchronised."""
-        self._lost_synch = True
+    # def lost_synch(self):
+    #     """Mark connection as desynchronised."""
+    #     self._lost_synch = True
 
-    def _parse_msg(self, msg):
-        self.part_msg += msg
-        strlen = len(self.part_msg)
-        message_found = 0
-        # Split into individual responses
-        while strlen > 2:
-            if self._lost_synch:
-                while strlen > 0:
-                    # wait for next gen2 card message
-                    if (self.part_msg[0] & 0xe0) == 0x20:
-                        self._lost_synch = False
-                        break
-                    self.part_msg = self.part_msg[1:]
-                    strlen -= 1
-            elif self.part_msg[0] == ord(CanPinRs232Intf.EOM_CMD):
-                self.part_msg = self.part_msg[1:]
-                strlen -= 1
-            else:
-                # Check if read input
-                if self.part_msg[1] == ord(CanPinRs232Intf.READ_GEN2_INP_CMD):
-                    if strlen >= 7:
-                        self.platform.process_received_message(self.chain_serial, self.part_msg[:7])
-                        message_found += 1
-                        self.part_msg = self.part_msg[7:]
-                        strlen -= 7
-                    else:
-                        # message not complete yet
-                        break
-                # Check if read matrix input
-                # elif self.part_msg[1] == ord(CanPinRs232Intf.READ_MATRIX_INP):
-                #     if strlen >= 11:
-                #         self.platform.process_received_message(self.chain_serial, self.part_msg[:11])
-                #         message_found += 1
-                #         self.part_msg = self.part_msg[11:]
-                #         strlen -= 11
-                #     else:
-                #         # message not complete yet
-                #         break
-                else:
-                    # Lost synch
-                    self.part_msg = self.part_msg[2:]
-                    strlen -= 2
-                    self._lost_synch = True
+    # def _parse_msg(self, msg):
+    #     self.part_msg += msg
+    #     strlen = len(self.part_msg)
+    #     message_found = 0
+    #     # Split into individual responses
+    #     while strlen > 2:
+    #         if self._lost_synch:
+    #             while strlen > 0:
+    #                 # wait for next gen2 card message
+    #                 if (self.part_msg[0] & 0xe0) == 0x20:
+    #                     self._lost_synch = False
+    #                     break
+    #                 self.part_msg = self.part_msg[1:]
+    #                 strlen -= 1
+    #         elif self.part_msg[0] == ord(CanPinRs232Intf.EOM_CMD):
+    #             self.part_msg = self.part_msg[1:]
+    #             strlen -= 1
+    #         else:
+    #             # Check if read input
+    #             if self.part_msg[1] == ord(CanPinRs232Intf.READ_GEN2_INP_CMD):
+    #                 if strlen >= 7:
+    #                     self.platform.process_received_message(self.chain_serial, self.part_msg[:7])
+    #                     message_found += 1
+    #                     self.part_msg = self.part_msg[7:]
+    #                     strlen -= 7
+    #                 else:
+    #                     # message not complete yet
+    #                     break
+    #             # Check if read matrix input
+    #             # elif self.part_msg[1] == ord(CanPinRs232Intf.READ_MATRIX_INP):
+    #             #     if strlen >= 11:
+    #             #         self.platform.process_received_message(self.chain_serial, self.part_msg[:11])
+    #             #         message_found += 1
+    #             #         self.part_msg = self.part_msg[11:]
+    #             #         strlen -= 11
+    #             #     else:
+    #             #         # message not complete yet
+    #             #         break
+    #             else:
+    #                 # Lost synch
+    #                 self.part_msg = self.part_msg[2:]
+    #                 strlen -= 2
+    #                 self._lost_synch = True
 
-        return message_found
+    #     return message_found
