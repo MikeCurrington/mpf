@@ -12,9 +12,13 @@ if MYPY:    # pragma: no cover
 
 class CanPinMessage(can.Message):
     def __init__(self, messageType, data):
-        super().__init__(is_extended_id=False)
-        self.arbitration_id = messageType
-        self.data = data
+        super().__init__(is_extended_id=False, data=data)
+        self.arbitration_id = messageType<<5
+
+eCanBusMessage_DeviceReady = 1
+eCanBusMessage_WelcomeNewHost = 2
+eCanBusMessage_AssignDeviceIndex = 3
+eCanBusMessage_GetNodeCapabilities = 4
 
 
 class CanPinBusCommunicator(can.Listener):
@@ -32,6 +36,9 @@ class CanPinBusCommunicator(can.Listener):
         self.canbus = can.Bus(channel='can0', bustype='socketcan', ignore_config=False, receive_own_messages=True)
         #self.canbus_notifier = can.Notifier(self.canbus, [printer, self])
         #can.Message(arbitration_id=0x7de,data=[0, 25, 0, 1, 3, 1, 4, 1])
+        self.ready_id=0
+        self.board_id = 0x98
+        self.boards = {}
 
         self.platform = platform    # hint the right type
 
@@ -40,10 +47,10 @@ class CanPinBusCommunicator(can.Listener):
         printer = can.Printer()
         self.canbus_notifier = can.Notifier(self.canbus, [printer, self])
 
-        eCanBusMessage_DeviceReady = 1
-        self.canbus.send( CanPinMessage(eCanBusMessage_DeviceReady, [0,0,0,0]) )
+        self.ready_id += 1
+        self.canbus.send( CanPinMessage(eCanBusMessage_DeviceReady, [0,0,0,self.board_id&0xff,self.ready_id&0xff,self.ready_id>>8]) )
 
-        asyncio.sleep(1)
+        await asyncio.sleep(1)
 
     async def start_read_loop(self):
         """Start the read loop."""
@@ -55,7 +62,22 @@ class CanPinBusCommunicator(can.Listener):
             # msg.arbitration_id
             # msg.dlc (data size)
             # msg.data (up to 8 bytes of data)
-            pass
+            message_id = msg.arbitration_id>>5
+            recipient_id = msg.arbitration_id & 0x1f
+
+            if message_id == eCanBusMessage_DeviceReady:
+                pass
+            elif message_id == eCanBusMessage_WelcomeNewHost:
+                host_id = msg.data[3] | (msg.data[2]<<8) | (msg.data[1]<<16) | (msg.data[0]<<24)
+                voter_id = msg.data[7] | (msg.data[6]<<8) | (msg.data[5]<<16) | (msg.data[4]<<24)
+                if host_id != self.board_id:
+                    print(f'Expecting that we are the host (id {self.board_id}) but {voter_id} is voting for {host_id}')
+                else:
+                    if not voter_id in self.boards:
+                        self.boards[voter_id] = {}
+                        print(f'Registering board {voter_id}')
+            else:
+                print(f'Unhandled message_id {message_id}')
 
     async def _read_id(self):
         # msg = bytearray([0, CanPinRs232Intf.GET_ENDPOINT_SER_NUM_CMD[0], 0x00, 0x00, 0x00, 0x00])
