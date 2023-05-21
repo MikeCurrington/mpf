@@ -1,7 +1,7 @@
 environment:
 
   global:
-    MPF_VERSION: 0.55
+    MPF_VERSION: 0.56
 
   matrix:
     - PYTHON: "C:\\Python36"

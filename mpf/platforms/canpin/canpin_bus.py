@@ -5,20 +5,17 @@ import asyncio
 from mpf.platforms.canpin.canpin_rs232_intf import CanPinRs232Intf
 from mpf.platforms.base_serial_communicator import BaseSerialCommunicator, HEX_FORMAT
 from mpf.core.utility_functions import Util
+from mpf.platforms.canpin.defines import CanPinMessages
 
 MYPY = False
 if MYPY:    # pragma: no cover
     from mpf.platforms.canpin.canpin import CanPinHardwarePlatform   # pylint: disable-msg=cyclic-import,unused-import
 
+
 class CanPinMessage(can.Message):
     def __init__(self, messageType, data):
         super().__init__(is_extended_id=False, data=data)
         self.arbitration_id = messageType<<5
-
-eCanBusMessage_DeviceReady = 1
-eCanBusMessage_WelcomeNewHost = 2
-eCanBusMessage_AssignDeviceIndex = 3
-eCanBusMessage_GetNodeCapabilities = 4
 
 
 class CanPinBusCommunicator(can.Listener):
@@ -28,19 +25,17 @@ class CanPinBusCommunicator(can.Listener):
     __slots__ = ["canbus", "platform"]
 
     # pylint: disable=too-many-arguments
-    def __init__(self, platform: "CanPinHardwarePlatform", port, baud) -> None:
+    def __init__(self, platform: "CanPinHardwarePlatform", port, interface, baud) -> None:
         """Initialise CanBus Connection to CanPin Hardware."""
     
-        print("CanPinBusCommunicator port: " + str(port) + " baud: " + str(baud))
-
-        self.canbus = can.Bus(channel='can0', bustype='socketcan', ignore_config=False, receive_own_messages=True)
-        #self.canbus_notifier = can.Notifier(self.canbus, [printer, self])
-        #can.Message(arbitration_id=0x7de,data=[0, 25, 0, 1, 3, 1, 4, 1])
+        platform.log.info("CanPinBusCommunicator port: " + str(port) + " interface: " + str(interface) + " baud: " + str(baud))
+        #bustype='socketcan', 
+        self.canbus = can.Bus(channel=port, interface=interface, ignore_config=False, receive_own_messages=False)
         self.ready_id=0
-        self.board_id = 0x98
+        self.board_id = 0x97
         self.boards = {}
 
-        self.platform = platform    # hint the right type
+        self.platform = platform
 
     async def connect(self):
 
@@ -48,13 +43,14 @@ class CanPinBusCommunicator(can.Listener):
         self.canbus_notifier = can.Notifier(self.canbus, [printer, self])
 
         self.ready_id += 1
-        self.canbus.send( CanPinMessage(eCanBusMessage_DeviceReady, [0,0,0,self.board_id&0xff,self.ready_id&0xff,self.ready_id>>8]) )
+        self.canbus.send( CanPinMessage(CanPinMessages.DeviceReady, [0,0,0,self.board_id&0xff,self.ready_id&0xff,self.ready_id>>8]) )
 
-        await asyncio.sleep(1)
+    def send_board_index(self, board_id, board_index):
+        self.canbus.send( CanPinMessage(CanPinMessages.AssignDeviceIndex, [board_id>>24,(self.board_id>>16)&0xff,(self.board_id>>8)&0xff,self.board_id&0xff,self.board_index]) )
 
     async def start_read_loop(self):
         """Start the read loop."""
-
+        pass
 
     def on_message_received(self, msg):
         if not msg.is_error_frame and not msg.is_remote_frame:
@@ -65,127 +61,20 @@ class CanPinBusCommunicator(can.Listener):
             message_id = msg.arbitration_id>>5
             recipient_id = msg.arbitration_id & 0x1f
 
-            if message_id == eCanBusMessage_DeviceReady:
+            if message_id == CanPinMessages.DeviceReady:
                 pass
-            elif message_id == eCanBusMessage_WelcomeNewHost:
+            elif message_id == CanPinMessages.WelcomeNewHost:
                 host_id = msg.data[3] | (msg.data[2]<<8) | (msg.data[1]<<16) | (msg.data[0]<<24)
                 voter_id = msg.data[7] | (msg.data[6]<<8) | (msg.data[5]<<16) | (msg.data[4]<<24)
                 if host_id != self.board_id:
-                    print(f'Expecting that we are the host (id {self.board_id}) but {voter_id} is voting for {host_id}')
+                    self.platform.log.debug(f'Expecting that we are the host (id {self.board_id}) but {voter_id} is voting for {host_id}')
                 else:
                     if not voter_id in self.boards:
                         self.boards[voter_id] = {}
-                        print(f'Registering board {voter_id}')
+                        self.platform.log.debug(f'Registering board {voter_id}')
+                        self.platform.register_io_board(voter_id)
             else:
-                print(f'Unhandled message_id {message_id}')
-
-    async def _read_id(self):
-        # msg = bytearray([0, CanPinRs232Intf.GET_ENDPOINT_SER_NUM_CMD[0], 0x00, 0x00, 0x00, 0x00])
-        # msg.extend(CanPinRs232Intf.calc_crc8_whole_msg(msg))
-        # msg.extend(CanPinRs232Intf.EOM_CMD)
-        # self.send(bytes(msg))
-
-        # resp = await self.read(8)
-        # if resp[7] != ord(CanPinRs232Intf.EOM_CMD):
-        #     raise AssertionError("Failed to read ID from {}. Missing EOM.".format(self.port))
-
-        # if ord(CanPinRs232Intf.calc_crc8_whole_msg(resp[0:6])) != resp[6]:
-        #     raise AssertionError("Failed to read ID from {}. Wrong CRC.".format(self.port))
-
-        # if resp[1] != 0:
-        #     raise AssertionError("Failed to read ID from {}. Wrong CMD.".format(self.port))
-
-        resp = bytearray([0,0,0,0,0,0])
-        return (resp[2] << 24) + (resp[3] << 16) + (resp[4] << 8) + resp[5]
-
-    async def _identify_connection(self):
-        """Identify which processor this serial connection is talking to."""
-        # keep looping and wait for an ID response
-        count = 0
-        # read and discard all messages in buffer
-
-        print("CanPinBusCommunicator _identify_connection")
-
-        # self.send(CanPinRs232Intf.EOM_CMD)
-        # await asyncio.sleep(.01)
-        # await self.read(1000)
-        # while True:
-        #     if (count % 10) == 0:
-        #         self.log.debug("Sending EOM command to port '%s'",
-        #                        self.port)
-        #     count += 1
-        #     self.send(CanPinRs232Intf.EOM_CMD)
-        #     await asyncio.sleep(.01)
-        #     resp = await self.read(30)
-        #     if resp.startswith(CanPinRs232Intf.EOM_CMD):
-        #         break
-        #     if count == 100:
-        #         raise AssertionError('No response from CanPin hardware: {}'.format(self.port))
-
-        # self.log.debug("Got ID response: %s", "".join(HEX_FORMAT % b for b in resp))
-
-        # # get ID from hardware
-        # connection_device_id = await self._read_id()
-        # self.chain_serial = '%x' % connection_device_id
-
-        # if self.chain_serial in self.platform.io_boards:
-        #     raise AssertionError("Duplicate chain serial {} on ports: {} and {}. Each CanPin board has to have a "
-        #                          "unique ID. You can overwrite this using the chains (NOT CURRENTLY IMPLEMENTED) "
-        #                          "setting.".format(self.chain_serial, self.port,
-        #                                            self.platform.canpin_connection[self.chain_serial]))
-
-        # # Send inventory command to figure out number of cards
-        # msg = bytearray()
-        # msg.extend(CanPinRs232Intf.INV_CMD)
-        # msg.extend(CanPinRs232Intf.EOM_CMD)
-        # cmd = bytes(msg)
-
-        # self.log.debug("Sending inventory command: %s", "".join(HEX_FORMAT % b for b in cmd))
-        # self.send(cmd)
-
-        # resp = await self.readuntil(b'\xff')
-
-        # # resp will contain the inventory response.
-        # self.platform.process_received_message(self.chain_serial, resp)
-
-        # # now we can set the board indices
-        # self.send_board_index_cmd()
-
-        # # and now send the pin configs for the known boards
-        # self.send_board_configration_cmd()
-
-        # # and start up the io!
-        # self.send_start_board_io_cmd()
-
-        # """Read response to the 'START_BOARD_IO' command."""
-        # for board_id in self.platform.canpin_boardid_arr[self.chain_serial]:
-        #     self.platform.log.warning("Reading START_BOARD_IO response: ")
-        #     resp = await self.readuntil(b'\xff', 4)
-        #     self.platform.log.warning("Got START_BOARD_IO response: %s", "".join(HEX_FORMAT % b for b in resp))
-        #     self.platform.process_received_message(self.chain_serial, resp)
-        # self.platform.log.warning("done reading START_BOARD_IO response: ")
-
-        # # # Now send get gen2 configuration message to find populated wing boards
-        # # self.send_get_gen2_cfg_cmd()
-        # # resp = await self.readuntil(b'\xff', 6)
-
-        # # # resp will contain the gen2 cfg responses.  That will end up creating all the
-        # # # correct objects.
-        # # self.platform.process_received_message(self.chain_serial, resp)
-
-        # # Rather than doing the gen2 configuration request just register based on the boards we know and their setup yaml.
-        # self.platform.register_known_io_boards(self.chain_serial)
-
-        # # get initial value for inputs
-        # self.log.debug("Getting initial inputs states for %s", self.chain_serial)
-        # for io_board_id, io_board in self.platform.io_boards.items():
-        #     self.send(io_board.read_input_msg)
-        #     resp = await self.readuntil(b'\xff')
-        #     self._parse_msg(resp)
-
-        self.chain_serial = "can0"
-        self.log.info("Init of CanPin connection %s done", self.chain_serial)
-        self.platform.register_processor_connection(self.chain_serial, self)
+                self.log.debug(f'Unhandled message_id {message_id}')
 
     # def send_get_gen2_cfg_cmd(self):
     #     """Send get gen2 configuration message to find populated wing boards."""

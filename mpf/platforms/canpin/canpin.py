@@ -13,27 +13,9 @@ from serial import SerialException
 from typing import Dict, Set, Optional
 
 from mpf.exceptions.runtime_error import MpfRuntimeError
-#from mpf.platforms.canpin.canpin_serial import CanPinSerialCommunicator
 from mpf.platforms.canpin.canpin_bus import CanPinBusCommunicator
 from mpf.platforms.canpin.canpin_rs232_intf import CanPinRs232Intf
 from mpf.platforms.base_serial_communicator import HEX_FORMAT
-# from mpf.platforms.fast.fast_io_board import FastIoBoard
-# from mpf.platforms.fast.fast_servo import FastServo
-# from mpf.platforms.fast import fast_defines
-# from mpf.platforms.fast.fast_dmd import FASTDMD
-# from mpf.platforms.fast.fast_driver import FASTDriver
-# from mpf.platforms.fast.fast_gi import FASTGIString
-# from mpf.platforms.fast.fast_led import FASTDirectLED, FASTDirectLEDChannel
-# from mpf.platforms.fast.fast_light import FASTMatrixLight
-# from mpf.platforms.fast.fast_segment_display import FASTSegmentDisplay
-# from mpf.platforms.fast.fast_serial_communicator import FastSerialCommunicator
-# from mpf.platforms.fast.fast_switch import FASTSwitch
-# from mpf.platforms.autodetect import autodetect_fast_ports
-# from mpf.core.platform import ServoPlatform, DmdPlatform, LightsPlatform, SegmentDisplayPlatform, \
-#     DriverPlatform, DriverSettings, SwitchPlatform, SwitchSettings, DriverConfig, SwitchConfig, \
-#     RepulseSettings
-
-from mpf.platforms.canpin.defines import CanPinDefines
 
 from mpf.core.platform import SwitchPlatform, LightsPlatform, DriverPlatform, SwitchSettings, DriverSettings, \
     DriverConfig, SwitchConfig, RepulseSettings
@@ -51,44 +33,31 @@ from mpf.core.logging import LogMixin
 class CanPinIoBoard:
     """IoBoard class for a single CANPIN board."""
 
-    __slots__ = [ "chain_serial", "node_id", "switch_count", "firmware_version", "driver_count", "pixel_strip_count", "read_input_msg", "platform", "input_state_bits" ]
+    __slots__ = [ "board_id", "switch_count", "firmware_version", "driver_count", "pixel_strip_count", "platform", "input_state_bits" ]
 
     # pylint: disable-msg=too-many-arguments
-    def __init__(self, chain_serial, node_id, switch_count, driver_count, pixel_strip_count, read_input_msg, platform):
+    def __init__(self, board_id, switch_count, driver_count, pixel_strip_count, platform):
         """Initialise CanPinIoBoard."""
-        self.chain_serial = chain_serial
-        self.node_id = node_id
+        self.board_id = board_id
         self.switch_count = switch_count
         self.firmware_version = None
         self.driver_count = driver_count
         self.pixel_strip_count = pixel_strip_count
-        self.read_input_msg = read_input_msg
         self.platform = platform
         self.input_state_bits = 0
 
     def get_name(self):
-        return "CANPIN {}".format(self.node_id)
+        return "CANPIN {}".format(self.board_id)
 
     def get_info_string(self) -> str:
         """Return description string."""
         return "Board {} - Firmware: {} Switches: {} Drivers: {} Pixel strips: {}".format(
-            self.node_id,
+            self.board_id,
             self.firmware_version,
             self.switch_count,
             self.driver_count,
             self.pixel_strip_count
         )
-
-    def send_cmd(self, cmd: int, data: bytes = None):
-        """Send a command targetted to this board"""
-        msg = bytearray()
-        msg.append(self.node_id)
-        msg += cmd
-        msg.extend(data)
-        msg.extend(CanPinRs232Intf.calc_crc8_whole_msg(msg))
-        msg.extend(CanPinRs232Intf.EOM_CMD)
-        msg_bytes = bytes(msg)
-        return self.platform.send(self.node_id, msg_bytes)
 
 
 class CanPinDriver(DriverPlatformInterface):
@@ -228,7 +197,7 @@ class CanPinHardwarePlatform(SwitchPlatform, DriverPlatform, LogMixin):
 
     """Platform class for the CANPIN hardware controller."""
 
-    __slots__ = [ "config", "_watchdog_task", "hw_switch_data", "serial_connections", "io_boards", "_bus_lock", "canpin_commands", "canpin_boardid_arr", "canpin_addr_arr", "node_to_connection", "num_canpin_brd", "_poll_task", "_poll_response_received" ]
+    __slots__ = [ "config", "canbus_connection", "_watchdog_task", "hw_switch_data", "io_boards", "num_canpin_brd", "_poll_task", "_poll_response_received" ]
 
     def __init__(self, machine):
         """Initialise CanPin hardware platform.
@@ -245,26 +214,17 @@ class CanPinHardwarePlatform(SwitchPlatform, DriverPlatform, LogMixin):
         self._configure_device_logging_and_debug("canpin", self.config)
 
         self._watchdog_task = None
-        self._bus_lock = asyncio.Lock()
         self.hw_switch_data = {}
-        self.serial_connections = {}                        # type: Dict[str, CanPinSerialCommunicator]
+        self.canbus_connection = None                       # type: CanPinBusCommunicator]
         self.io_boards = {}                                 # type: Dict[int, CanPinIoBoard]
-        self.canpin_addr_arr = {}                           # type: Dict[str, Dict[int, Optional[int]]]
-        self.canpin_boardid_arr = {}                        # type: Dict[str, Dict[int, Optional[int]]]
-        self.node_to_connection = {}                        # type: Dict[int, CanPinSerialCommunicator]
-        self.num_canpin_brd = 0
-        self._poll_task = {}                                # type: Dict[CanPinSerialCommunicator, task]
-        self._poll_response_received = {}                   # type: Dict[str, asyncio.Event]
         
-        # Only including responses that should be received
-        self.canpin_commands = {
-            ord(CanPinRs232Intf.INV_CMD): self.inv_resp,
-            ord(CanPinRs232Intf.EOM_CMD): self.eom_resp,
-            #ord(CanPinRs232Intf.GET_GEN2_CFG): self.get_gen2_cfg_resp,
-            ord(CanPinRs232Intf.START_BOARD_IO): self.read_start_board_io_resp,
-            ord(CanPinRs232Intf.READ_GEN2_INP_CMD): self.read_gen2_inp_resp_initial,
-            #ord(CanPinRs232Intf.READ_MATRIX_INP): self.read_matrix_inp_resp_initial,
-        }
+        # # Only including responses that should be received
+        # self.canpin_commands = {
+        #     ord(CanPinRs232Intf.INV_CMD): self.inv_resp,
+        #     ord(CanPinRs232Intf.EOM_CMD): self.eom_resp,
+        #     ord(CanPinRs232Intf.START_BOARD_IO): self.read_start_board_io_resp,
+        #     ord(CanPinRs232Intf.READ_GEN2_INP_CMD): self.read_gen2_inp_resp_initial
+        # }
 
     def get_info_string(self):
         """Dump infos about boards."""
@@ -277,413 +237,259 @@ class CanPinHardwarePlatform(SwitchPlatform, DriverPlatform, LogMixin):
     async def initialize(self):
         """Initialise platform."""
         await self._connect_to_hardware()
-        self.canpin_commands[ord(CanPinRs232Intf.READ_GEN2_INP_CMD)] = self.read_gen2_inp_resp
-        #self.canpin_commands[ord(CanPinRs232Intf.READ_MATRIX_INP)] = self.read_matrix_inp_resp
 
     def stop(self):
         """Stop platform and close connections."""
-        self.node_to_connection = {}
-        self.serial_connections = {}
+        self.canbus_connection = None
 
     async def start(self):
         """Start polling and listening for commands."""
         # start polling
-        for serial_connection in self.serial_connections.values():
-            self._poll_task[serial_connection] = self.machine.clock.loop.create_task(self._poll_sender(serial_connection))
-            self._poll_task[serial_connection].add_done_callback(Util.raise_exceptions)
 
         # start listening for commands
-        print("hmmm {}\n", self.serial_connections)
-        for serial_connection in self.serial_connections.values():
-            await serial_connection.start_read_loop()
-
-    def process_received_message(self, chain_serial, msg):
-        """Send an incoming message from the CanPin hardware to the proper method for servicing.
-
-        Args:
-        ----
-            chain_serial: Serial of the chain which received the message.
-            msg: Message to parse.
-        """
-        print("Process recieved")
-        if len(msg) >= 1:
-            if msg[0] == ord(CanPinRs232Intf.INV_CMD) or msg[0] == ord(CanPinRs232Intf.EOM_CMD):
-                cmd = msg[0]
-            elif len(msg) >= 2:
-                cmd = msg[1]
-            else:
-                cmd = CanPinRs232Intf.ILLEGAL_CMD
-        else:
-            # No messages received, fake an EOM
-            cmd = CanPinRs232Intf.EOM_CMD
-        print("Process recieved cmd ", cmd)
-
-        # Can't use try since it swallows too many errors for now
-        if cmd in self.canpin_commands:
-            self.canpin_commands[cmd](chain_serial, msg)
-        else:
-            self.log.warning("Received unknown serial command?%s. (This is "
-                             "very worrisome.)", "".join(HEX_FORMAT % b for b in msg))
-
-            # TODO: This means synchronization is lost.  Send EOM characters
-            #  until they come back
-            self.serial_connections[chain_serial].lost_synch()
+        await self.canbus_connection.start_read_loop()
 
     def __repr__(self):
         """Return str representation."""
         return '<Platform.CANPIN>'
 
     async def _connect_to_hardware(self):
-        """Connect to each port from the config.
+        """Connect to Can-Bus.
 
-        This process will cause the CanPinSerialCommunicator to figure out which board they've connected to
-        and to register themselves.
+        This process will cause the CanPinBusCommunicator to become bus 'master' and to register themselves.
         """
         #port_chain_serial_map = {v: k for k, v in self.config['chains'].items()}
-        for port in self.config['ports']:
-            # overwrite serial if defined for port
-            comm = CanPinBusCommunicator(platform=self, port=port, baud=self.config['baud'])
-            await comm.connect()
+        communicator = CanPinBusCommunicator(platform=self, port=self.config['port'], interface=self.config['interface'], baud=self.config['baud'])
+        await communicator.connect()
 
-    def register_processor_connection(self, chain_serial : str, serial_communicator : CanPinBusCommunicator):
-        self.serial_connections[chain_serial] = serial_communicator
+    def register_processor_connection(self, communicator : CanPinBusCommunicator):
+        self.canbus_connection = communicator
 
-    def register_io_board(self, board: CanPinIoBoard):
-        """Register an IO board.
+    def register_io_board(self, board_id):
+        """Create and register IO board if it is new.  Ok for board to be already registered. """
+        if board_id not in self.io_boards:
+            if board_id not in self.config['boards']:
+                raise AssertionError(f'Board connected to canbus that is not in config.  Board_id {board_id}')
+            else:
+                board_config = self.config['boards'][board_id]
+                board_index = board_config['board_index']
+                self.io_boards[board_id] = CanPinIoBoard(board_index, len(board_config['input_pins']), len(board_config['output_pins']), len(board_config['led_pins']), self)
+                self.configure_io_board(board_id, self.io_boards[board_id])
 
-        Args:
-        ----
-            board: 'mpf.platform.canpin.CanPinIoBoard' to register
-        """
-        if board.node_id in self.io_boards:
-            raise AssertionError("Duplicate node_id")
-        self.io_boards[board.node_id] = board
+    def configure_io_board(self, board_id, io_board: CanPinIoBoard):
+        """Send commands to setup this board"""
+        self.canbus_connection.send_board_index(io_board.board_id, io_board.board_index)
 
-    def _update_watchdog(self):
-        """Send Watchdog command."""
-        try:
-            raise AssertionError("Implement _update_watchdog MJC")
-        except:
-            pass
-
-    def inv_resp(self, chain_serial, msg):
-        """Parse inventory response.
-
-        Args:
-        ----
-            chain_serial: Serial of the chain which received the message.
-            msg: Message to parse.
-        """
-        print("debug_log: {}", self.debug_log)
-        self.debug_log("Received Inventory Response: %s for %s", "".join(HEX_FORMAT % b for b in msg), chain_serial)
-
-        index = 2;
-        inventory_bytes = 0;
-        while msg[index] != ord(CanPinRs232Intf.EOM_CMD):
-            inventory_bytes = inventory_bytes+1
-            index+=1
-        if (inventory_bytes%4)!=0:
-            self.log.warning("Invalid inventory response for %s.", chain_serial)
-        else:
-            index = 2
-            self.canpin_boardid_arr[chain_serial] = {}
-            self.canpin_addr_arr[chain_serial] = {}
-            while msg[index] != ord(CanPinRs232Intf.EOM_CMD):
-                board_id = (msg[index] << 24) | (msg[index+1] << 16) | (msg[index+2] << 8) | msg[index+3]
-                index += 4
-                board_id_string = '%x' % board_id
-                self.log.warning("Looking for board %s %s.", board_id_string, board_id)
-                if board_id_string in self.config['boards']:
-                    self.canpin_boardid_arr[chain_serial][board_id_string] = None
-                    board_index = self.config['boards'][board_id_string]['board_index']
-                    self.canpin_addr_arr[chain_serial][board_index] = None
-                    self.num_canpin_brd += 1
-                else:
-                    self.log.warning("Board %s not in hardware settings (canpin: boards:)'.", board_id_string)
-            self.log.warning("Found %d known CanPin boards on %s.", self.num_canpin_brd, chain_serial)
-
-    # pylint: disable-msg=too-many-statements
-    @staticmethod
-    def eom_resp(chain_serial, msg):
-        """Process an EOM.
-
-        Args:
-        ----
-            chain_serial: Serial of the chain which received the message.
-            msg: Message to parse.
-        """
-        # An EOM command can be used to resynchronize communications if message synch is lost
-
-    def _parse_gen2_board(self, chain_serial, msg):
+    def clear_hw_rule(self, switch: SwitchSettings, coil: DriverSettings):
+        """Clear hw rule for driver."""
         pass
 
-    def _parse_canpin_board(self, chain_serial, msg):
-
-        board_index = msg[0]
-        num_drivers = msg[2 + 0]
-        num_switches = msg[2 + 1]
-        num_pixel_strips = msg[2 + 2]
-
-        # Build the command message to read all inputs
-        read_input_msg = bytearray()
-        read_input_msg.append(msg[0])
-        read_input_msg.extend(CanPinRs232Intf.READ_GEN2_INP_CMD)
-        read_input_msg.append(0)
-        read_input_msg.append(0)
-        read_input_msg.append(0)
-        read_input_msg.append(0)
-        read_input_msg.extend(CanPinRs232Intf.calc_crc8_whole_msg(read_input_msg))
-        read_input_msg.extend(CanPinRs232Intf.EOM_CMD)
-
-        self.register_io_board( CanPinIoBoard(chain_serial, board_index, num_switches, num_drivers, num_pixel_strips, read_input_msg, self) )
-
-    def register_known_io_boards(self, chain_serial):
-        """Create the io board objects that are known and connected to this chain"""
-        for board_id in self.canpin_boardid_arr[chain_serial]:
-            board_config = self.config['boards'][board_id]
-            board_index = board_config['board_index']
-
-            # Build the command message to read all inputs
-            read_input_msg = bytearray()
-            read_input_msg.append(board_index)
-            read_input_msg.extend(CanPinRs232Intf.READ_GEN2_INP_CMD)
-            read_input_msg.append(0)
-            read_input_msg.append(0)
-            read_input_msg.append(0)
-            read_input_msg.append(0)
-            read_input_msg.extend(CanPinRs232Intf.calc_crc8_whole_msg(read_input_msg))
-            read_input_msg.extend(CanPinRs232Intf.EOM_CMD)
-
-            self.register_io_board( CanPinIoBoard(chain_serial, board_index, len(board_config['input_pins']), len(board_config['output_pins']), len(board_config['led_pins']), read_input_msg, self) )
-        self._poll_response_received[chain_serial] = asyncio.Event()
-        self._poll_response_received[chain_serial].set()
-
-    def _bad_crc(self, chain_serial, msg):
-        """Show warning and increase counter."""
-        self.bad_crc[chain_serial] += 1
-        self.log.warning("Chain: %sMsg contains bad CRC: %s.", chain_serial, "".join(HEX_FORMAT % b for b in msg))
-
-    def get_gen2_cfg_resp(self, chain_serial, msg):
-        """Process cfg response.
-
-        Args:
-        ----
-            chain_serial: Communication port of the chain which received the message.
-            msg: Message to parse.
+    def set_pulse_on_hit_and_enable_and_release_and_disable_rule(self, enable_switch: SwitchSettings,
+                                                                 eos_switch: SwitchSettings, coil: DriverSettings,
+                                                                 repulse_settings: Optional[RepulseSettings]):
+        """Set pulse on hit and enable and release and disable rule on driver.
+        Pulses a driver when a switch is hit. When the switch is released
+        the pulse is canceled and the driver gets disabled. When the eos_switch is hit the pulse is canceled
+        and the driver becomes disabled. Typically used on the main coil for dual-wound coil flippers with eos switch.
         """
-        # Multiple get gen2 cfg responses can be received at once
-        self.debug_log("Received Gen2 Cfg Response:%s", "".join(HEX_FORMAT % b for b in msg))
-        curr_index = 0
-        while True:
-            # check that message is long enough, must include crc8
-            if len(msg) < curr_index + 7:
-                self.log.warning("Msg is too short: %s.", "".join(HEX_FORMAT % b for b in msg))
-                self.serial_connections[chain_serial].lost_synch()
-                break
-            # Verify the CRC8 is correct
-            crc8 = CanPinRs232Intf.calc_crc8_part_msg(msg, curr_index, 6)
-            if msg[curr_index + 6] != ord(crc8):
-                self._bad_crc(chain_serial, msg)
-                break
-            card_type = msg[curr_index] & ord(CanPinRs232Intf.CARD_ID_TYPE_MASK)
-            if card_type == ord(CanPinRs232Intf.CARD_ID_CANPIN_CARD):
-                self._parse_canpin_board(chain_serial, msg[curr_index:curr_index + 6])
-            #elif card_type == ord(CanPinRs232Intf.CARD_ID_GEN2_CARD):
-            #    self._parse_gen2_board(chain_serial, msg[curr_index:curr_index + 6])
-            else:
-                self.log.warning("Invalid card type in GET_GEN2_CFG response:%s.",
-                                 "".join(HEX_FORMAT % b for b in msg))
-                self.serial_connections[chain_serial].lost_synch()
-                break
-
-            if (len(msg) > curr_index + 7) and (msg[curr_index + 7] == ord(CanPinRs232Intf.EOM_CMD)):
-                break
-            if (len(msg) > curr_index + 8) and (msg[curr_index + 8] == ord(CanPinRs232Intf.GET_GEN2_CFG)):
-                curr_index += 7
-            else:
-                self.log.warning("Malformed GET_GEN2_CFG response:%s.",
-                                 "".join(HEX_FORMAT % b for b in msg))
-                self.serial_connections[chain_serial].lost_synch()
-                break
-
-        self._poll_response_received[chain_serial] = asyncio.Event()
-        self._poll_response_received[chain_serial].set()
-
-
-    def read_start_board_io_resp(self, chain_serial, msg):
-        pass
-
-    def read_gen2_inp_resp_initial(self, chain_serial, msg):
-        """Read initial switch states.
-
-        Args:
-        ----
-            chain_serial: Serial of the chain which received the message.
-            msg: Message to parse.
-        """
-        self.debug_log("read_gen2_inp_resp_initial")
-        # Verify the CRC8 is correct
-        if len(msg) < 7:
-            raise AssertionError("Received too short initial input response: " + "".join(HEX_FORMAT % b for b in msg))
-        crc8 = CanPinRs232Intf.calc_crc8_part_msg(msg, 0, 6)
-        if msg[6] != ord(crc8):
-            self._bad_crc(chain_serial, msg)
-        else:
-            board = msg[0]
-            if board not in self.io_boards:
-                self.log.warning("Got input response for invalid board at initial request: %s. Msg: %s.", msg[0],
-                                 "".join(HEX_FORMAT % b for b in msg))
-                return
-
-            io_board = self.io_boards[board]
-
-            input_state_bits = (msg[2] << 24) | \
-                (msg[3] << 16) | \
-                (msg[4] << 8) | \
-                msg[5]
-
-            io_board.input_state_bits = input_state_bits
-
-            for switch in range(io_board.switch_count):
-                self.hw_switch_data[str(board) + '-' + str(switch)] = (input_state_bits >> switch) & 1
-
-    def read_gen2_inp_resp(self, chain_serial, msg):
-        """Read switch changes.
-
-        Args:
-        ----
-            chain_serial: Serial of the chain which received the message.
-            msg: Message to parse.
-        """
-        # Single read gen2 input response.  Receive function breaks them down
-        self.debug_log("read_gen2_inp_resp")
-
-        # Verify the CRC8 is correct
-        if len(msg) < 7:
-            self.log.warning("Msg too short: %s.", "".join(HEX_FORMAT % b for b in msg))
-            self.serial_connections[chain_serial].lost_synch()
-            return
-
-        crc8 = CanPinRs232Intf.calc_crc8_part_msg(msg, 0, 6)
-        if msg[6] != ord(crc8):
-            self._bad_crc(chain_serial, msg)
-        else:
-            board = msg[0]
-            if board not in self.io_boards:
-                self.log.warning("Got input response for invalid board: %s. Msg: %s.", msg[0],
-                                 "".join(HEX_FORMAT % b for b in msg))
-                return
-            io_board = self.io_boards[board]
-
-            new_state = (msg[2] << 24) | \
-                (msg[3] << 16) | \
-                (msg[4] << 8) | \
-                msg[5]
-
-            # Update the state which holds inputs that are active
-            changes = io_board.input_state_bits ^ new_state
-            if changes != 0:
-                print("input changes board %d %x", board, changes)
-                curr_bit = 1
-                for index in range(0, 32):
-                    if (curr_bit & changes) != 0:
-                        if (curr_bit & new_state) == 0:
-                            self.machine.switch_controller.process_switch_by_num(
-                                state=1,
-                                num=str(board) + '-' + str(index),
-                                platform=self)
-                        else:
-                            self.machine.switch_controller.process_switch_by_num(
-                                state=0,
-                                num=str(board) + '-' + str(index),
-                                platform=self)
-                    curr_bit <<= 1
-            io_board.input_state_bits = new_state
-
-        # we can continue to poll
-        print("_poll_response_received keys: ", self._poll_response_received.keys())
-        self._poll_response_received[chain_serial].set()
-
-    async def _poll_sender(self, serial_connection : CanPinBusCommunicator):
-        """Poll switches."""
-        chain_serial = serial_connection.chain_serial
-
-        # Send initial poll
-        for node_id in self.canpin_addr_arr[chain_serial]:
-            print("Send poll to ", chain_serial, " len=", len(self.io_boards[node_id].read_input_msg))
-            serial_connection.platform.send( node_id, self.io_boards[node_id].read_input_msg )
-
-        while True:
-            # wait for previous poll response
-            timeout = 1 / self.config['poll_hz'] * 25
-            try:
-                await asyncio.wait_for(self._poll_response_received[chain_serial].wait(), timeout)
-            except asyncio.TimeoutError:
-                self.log.warning("Poll took more than %sms for %s", timeout * 1000, chain_serial)
-            else:
-                self._poll_response_received[chain_serial].clear()
-            # send poll
-            for node_id in self.canpin_addr_arr[chain_serial]:
-                serial_connection.platform.send( node_id, self.io_boards[node_id].read_input_msg )
-            #mjc self.send_to_processor(chain_serial, self.read_input_msg[chain_serial])
-            await self.serial_connections[chain_serial].writer.drain()
-            # the line above saturates the link and seems to overwhelm the hardware. limit it to 100Hz
-            await asyncio.sleep(1 / self.config['poll_hz'])
+        assert coil.hold_settings is None
 
     def set_pulse_on_hit_and_enable_and_release_rule(self, enable_switch: SwitchSettings, coil: DriverSettings):
         """Set pulse on hit and enable and release rule on driver."""
         """Pulse and enable a driver. Cancel pulse and enable if switch is released."""
         assert coil.hold_settings.power > 0
 
-        self._configure_hardware_rule(coil, enable_switch, None, 3, 0)
-
     def set_pulse_on_hit_and_release_and_disable_rule(self, enable_switch: SwitchSettings,
                                                       eos_switch: SwitchSettings, coil: DriverSettings,
                                                       repulse_settings: Optional[RepulseSettings]):
         """Set pulse on hit and enable and release and disable rule on driver.
-
         Pulses a driver when a switch is hit. When the switch is released
         the pulse is canceled and the driver gets disabled. When the eos_switch is hit the pulse is canceled
         and the driver becomes disabled. Typically used on the main coil for dual-wound coil flippers with eos switch.
         """
         assert coil.hold_settings is None
-        self._configure_hardware_rule(coil, enable_switch, eos_switch, 3, 2)
-
-    def set_pulse_on_hit_and_enable_and_release_and_disable_rule(self, enable_switch: SwitchSettings,
-                                                                 eos_switch: SwitchSettings, coil: DriverSettings,
-                                                                 repulse_settings: Optional[RepulseSettings]):
-        """Set pulse on hit and enable and release and disable rule on driver.
-
-        Pulses a driver when a switch is hit. Then enables the driver (may be with pwm). When the switch is released
-        the pulse is canceled and the driver becomes disabled. When the eos_switch is hit the pulse is canceled
-        and the driver becomes enabled (likely with PWM).
-        Typically used on the coil for single-wound coil flippers with eos switch.
-        """
-        self._configure_hardware_rule(coil, enable_switch, eos_switch, 3, 2)
 
     def set_pulse_on_hit_and_release_rule(self, enable_switch: SwitchSettings, coil: DriverSettings):
         """Set pulse on hit and release rule to driver."""
         """Pulse a driver but cancel pulse when switch is released."""
         assert not coil.hold_settings or coil.hold_settings.power == 0
-        self._configure_hardware_rule(coil, enable_switch, None, 3, 0)
 
     def set_pulse_on_hit_rule(self, enable_switch: SwitchSettings, coil: DriverSettings):
         """Set pulse on hit rule on driver."""
         """Always do the full pulse. Even when the switch is released. Pulse is delayed accurately by the hardware."""
         assert not coil.hold_settings or coil.hold_settings.power == 0
-        self._configure_hardware_rule(coil, enable_switch, None, 1, 0)
 
-    def clear_hw_rule(self, switch: SwitchSettings, coil: DriverSettings):
-        """Clear hw rule for driver."""
-        del switch
-        coil.hw_driver.clear_hw_rule()
+    # def read_gen2_inp_resp_initial(self, chain_serial, msg):
+    #     """Read initial switch states.
 
-    # pylint: disable-msg=too-many-arguments
-    def _configure_hardware_rule(self, coil: DriverSettings, switch1: SwitchSettings,
-                                 switch2: Optional[SwitchSettings], flags1, flags2):
-        """Configure hardware rule in CANPIN."""
-        recycle = coil.pulse_settings.duration * 2 if coil.recycle else coil.pulse_settings.duration
-        coil.hw_driver.configure_hardware_rule( switch1, switch2, coil.pulse_settings, recycle, coil.hold_settings, flags1, flags2 )
+    #     Args:
+    #     ----
+    #         chain_serial: Serial of the chain which received the message.
+    #         msg: Message to parse.
+    #     """
+    #     self.debug_log("read_gen2_inp_resp_initial")
+    #     # Verify the CRC8 is correct
+    #     if len(msg) < 7:
+    #         raise AssertionError("Received too short initial input response: " + "".join(HEX_FORMAT % b for b in msg))
+    #     crc8 = CanPinRs232Intf.calc_crc8_part_msg(msg, 0, 6)
+    #     if msg[6] != ord(crc8):
+    #         self._bad_crc(chain_serial, msg)
+    #     else:
+    #         board = msg[0]
+    #         if board not in self.io_boards:
+    #             self.log.warning("Got input response for invalid board at initial request: %s. Msg: %s.", msg[0],
+    #                              "".join(HEX_FORMAT % b for b in msg))
+    #             return
+
+    #         io_board = self.io_boards[board]
+
+    #         input_state_bits = (msg[2] << 24) | \
+    #             (msg[3] << 16) | \
+    #             (msg[4] << 8) | \
+    #             msg[5]
+
+    #         io_board.input_state_bits = input_state_bits
+
+    #         for switch in range(io_board.switch_count):
+    #             self.hw_switch_data[str(board) + '-' + str(switch)] = (input_state_bits >> switch) & 1
+
+    # def read_gen2_inp_resp(self, chain_serial, msg):
+    #     """Read switch changes.
+
+    #     Args:
+    #     ----
+    #         chain_serial: Serial of the chain which received the message.
+    #         msg: Message to parse.
+    #     """
+    #     # Single read gen2 input response.  Receive function breaks them down
+    #     self.debug_log("read_gen2_inp_resp")
+
+    #     # Verify the CRC8 is correct
+    #     if len(msg) < 7:
+    #         self.log.warning("Msg too short: %s.", "".join(HEX_FORMAT % b for b in msg))
+    #         self.serial_connections[chain_serial].lost_synch()
+    #         return
+
+    #     crc8 = CanPinRs232Intf.calc_crc8_part_msg(msg, 0, 6)
+    #     if msg[6] != ord(crc8):
+    #         self._bad_crc(chain_serial, msg)
+    #     else:
+    #         board = msg[0]
+    #         if board not in self.io_boards:
+    #             self.log.warning("Got input response for invalid board: %s. Msg: %s.", msg[0],
+    #                              "".join(HEX_FORMAT % b for b in msg))
+    #             return
+    #         io_board = self.io_boards[board]
+
+    #         new_state = (msg[2] << 24) | \
+    #             (msg[3] << 16) | \
+    #             (msg[4] << 8) | \
+    #             msg[5]
+
+    #         # Update the state which holds inputs that are active
+    #         changes = io_board.input_state_bits ^ new_state
+    #         if changes != 0:
+    #             print("input changes board %d %x", board, changes)
+    #             curr_bit = 1
+    #             for index in range(0, 32):
+    #                 if (curr_bit & changes) != 0:
+    #                     if (curr_bit & new_state) == 0:
+    #                         self.machine.switch_controller.process_switch_by_num(
+    #                             state=1,
+    #                             num=str(board) + '-' + str(index),
+    #                             platform=self)
+    #                     else:
+    #                         self.machine.switch_controller.process_switch_by_num(
+    #                             state=0,
+    #                             num=str(board) + '-' + str(index),
+    #                             platform=self)
+    #                 curr_bit <<= 1
+    #         io_board.input_state_bits = new_state
+
+    #     # we can continue to poll
+    #     print("_poll_response_received keys: ", self._poll_response_received.keys())
+    #     self._poll_response_received[chain_serial].set()
+
+    # async def _poll_sender(self, serial_connection : CanPinBusCommunicator):
+    #     """Poll switches."""
+    #     chain_serial = serial_connection.chain_serial
+
+    #     # Send initial poll
+    #     for node_id in self.canpin_addr_arr[chain_serial]:
+    #         print("Send poll to ", chain_serial, " len=", len(self.io_boards[node_id].read_input_msg))
+    #         serial_connection.platform.send( node_id, self.io_boards[node_id].read_input_msg )
+
+    #     while True:
+    #         # wait for previous poll response
+    #         timeout = 1 / self.config['poll_hz'] * 25
+    #         try:
+    #             await asyncio.wait_for(self._poll_response_received[chain_serial].wait(), timeout)
+    #         except asyncio.TimeoutError:
+    #             self.log.warning("Poll took more than %sms for %s", timeout * 1000, chain_serial)
+    #         else:
+    #             self._poll_response_received[chain_serial].clear()
+    #         # send poll
+    #         for node_id in self.canpin_addr_arr[chain_serial]:
+    #             serial_connection.platform.send( node_id, self.io_boards[node_id].read_input_msg )
+    #         #mjc self.send_to_processor(chain_serial, self.read_input_msg[chain_serial])
+    #         await self.serial_connections[chain_serial].writer.drain()
+    #         # the line above saturates the link and seems to overwhelm the hardware. limit it to 100Hz
+    #         await asyncio.sleep(1 / self.config['poll_hz'])
+
+    # def set_pulse_on_hit_and_enable_and_release_rule(self, enable_switch: SwitchSettings, coil: DriverSettings):
+    #     """Set pulse on hit and enable and release rule on driver."""
+    #     """Pulse and enable a driver. Cancel pulse and enable if switch is released."""
+    #     assert coil.hold_settings.power > 0
+
+    #     self._configure_hardware_rule(coil, enable_switch, None, 3, 0)
+
+    # def set_pulse_on_hit_and_release_and_disable_rule(self, enable_switch: SwitchSettings,
+    #                                                   eos_switch: SwitchSettings, coil: DriverSettings,
+    #                                                   repulse_settings: Optional[RepulseSettings]):
+    #     """Set pulse on hit and enable and release and disable rule on driver.
+
+    #     Pulses a driver when a switch is hit. When the switch is released
+    #     the pulse is canceled and the driver gets disabled. When the eos_switch is hit the pulse is canceled
+    #     and the driver becomes disabled. Typically used on the main coil for dual-wound coil flippers with eos switch.
+    #     """
+    #     assert coil.hold_settings is None
+    #     self._configure_hardware_rule(coil, enable_switch, eos_switch, 3, 2)
+
+    # def set_pulse_on_hit_and_enable_and_release_and_disable_rule(self, enable_switch: SwitchSettings,
+    #                                                              eos_switch: SwitchSettings, coil: DriverSettings,
+    #                                                              repulse_settings: Optional[RepulseSettings]):
+    #     """Set pulse on hit and enable and release and disable rule on driver.
+
+    #     Pulses a driver when a switch is hit. Then enables the driver (may be with pwm). When the switch is released
+    #     the pulse is canceled and the driver becomes disabled. When the eos_switch is hit the pulse is canceled
+    #     and the driver becomes enabled (likely with PWM).
+    #     Typically used on the coil for single-wound coil flippers with eos switch.
+    #     """
+    #     self._configure_hardware_rule(coil, enable_switch, eos_switch, 3, 2)
+
+    # def set_pulse_on_hit_and_release_rule(self, enable_switch: SwitchSettings, coil: DriverSettings):
+    #     """Set pulse on hit and release rule to driver."""
+    #     """Pulse a driver but cancel pulse when switch is released."""
+    #     assert not coil.hold_settings or coil.hold_settings.power == 0
+    #     self._configure_hardware_rule(coil, enable_switch, None, 3, 0)
+
+    # def set_pulse_on_hit_rule(self, enable_switch: SwitchSettings, coil: DriverSettings):
+    #     """Set pulse on hit rule on driver."""
+    #     """Always do the full pulse. Even when the switch is released. Pulse is delayed accurately by the hardware."""
+    #     assert not coil.hold_settings or coil.hold_settings.power == 0
+    #     self._configure_hardware_rule(coil, enable_switch, None, 1, 0)
+
+    # def clear_hw_rule(self, switch: SwitchSettings, coil: DriverSettings):
+    #     """Clear hw rule for driver."""
+    #     del switch
+    #     coil.hw_driver.clear_hw_rule()
+
+    # # pylint: disable-msg=too-many-arguments
+    # def _configure_hardware_rule(self, coil: DriverSettings, switch1: SwitchSettings,
+    #                              switch2: Optional[SwitchSettings], flags1, flags2):
+    #     """Configure hardware rule in CANPIN."""
+    #     recycle = coil.pulse_settings.duration * 2 if coil.recycle else coil.pulse_settings.duration
+    #     coil.hw_driver.configure_hardware_rule( switch1, switch2, coil.pulse_settings, recycle, coil.hold_settings, flags1, flags2 )
 
     @staticmethod
     def _parse_number(number):
@@ -775,10 +581,6 @@ class CanPinHardwarePlatform(SwitchPlatform, DriverPlatform, LogMixin):
                                  "valid: {}".format(number, list(self.hw_switch_data.keys())))
 
         return CanPinSwitch(config=config, io_board=io_board, number=number, platform=self)
-
-    def send(self, node_id: int, data: bytes):
-        """Send a packet of data to the serial connection associated with the given node_id"""
-        self.serial_connections[self.io_boards[node_id].chain_serial].send(data)
 
     async def get_hw_switch_states(self):
         """Return hardware states."""

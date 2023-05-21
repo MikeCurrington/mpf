@@ -251,7 +251,8 @@ fadecandy:
     dithering: True
 
 canpin:
-    ports: com3
+    port: can0
+    interface: socketcan
 
 modes:
     - attract
