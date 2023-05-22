@@ -46,7 +46,7 @@ class CanPinBusCommunicator(can.Listener):
         self.canbus.send( CanPinMessage(CanPinMessages.DeviceReady, [0,0,0,self.board_id&0xff,self.ready_id&0xff,self.ready_id>>8]) )
 
     def send_board_index(self, board_id, board_index):
-        self.canbus.send( CanPinMessage(CanPinMessages.AssignDeviceIndex, [board_id>>24,(self.board_id>>16)&0xff,(self.board_id>>8)&0xff,self.board_id&0xff,self.board_index]) )
+        self.canbus.send( CanPinMessage(CanPinMessages.AssignDeviceIndex, [self.board_id&0xff,(self.board_id>>8)&0xff,(self.board_id>>16)&0xff,board_id>>24,self.board_index]) )
 
     async def start_read_loop(self):
         """Start the read loop."""
