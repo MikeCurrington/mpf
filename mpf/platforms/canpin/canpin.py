@@ -14,7 +14,7 @@ from typing import Dict, Set, Optional
 
 from mpf.exceptions.runtime_error import MpfRuntimeError
 from mpf.platforms.canpin.canpin_bus import CanPinBusCommunicator
-from mpf.platforms.canpin.canpin_rs232_intf import CanPinRs232Intf
+from mpf.platforms.canpin.defines import CanPinMessages
 from mpf.platforms.base_serial_communicator import HEX_FORMAT
 
 from mpf.core.platform import SwitchPlatform, LightsPlatform, DriverPlatform, SwitchSettings, DriverSettings, \
@@ -87,7 +87,7 @@ class CanPinDriver(DriverPlatformInterface):
 
         if self._recycle_time != recycle_time:
             self._recycle_time = recycle_time
-            self.io_board.send_cmd(CanPinRs232Intf.CoilSetRecycleTime,
+            self.io_board.send_cmd(CanPinMessages.SetRecycleTime,
                                    bytes([int(self.index), recycle_time]))
 
     def configure_max_pulse_ms(self, max_pulse_time):
@@ -98,7 +98,7 @@ class CanPinDriver(DriverPlatformInterface):
             max_pulse_time = 0
         if max_pulse_time != self._max_pulse_time:
             self._max_pulse_time = max_pulse_time
-            self.io_board.send_cmd(CanPinRs232Intf.CoilSetMaxPulseTime,
+            self.io_board.send_cmd(CanPinMessages.SetMaxPulseTime,
                                     bytes([int(self.index), max_pulse_time]))
 
     def pulse(self, pulse_settings: PulseSettings):
@@ -110,7 +110,7 @@ class CanPinDriver(DriverPlatformInterface):
             pulse_time = 254
         elif pulse_time < 0:
             pulse_time = 0
-        self.io_board.send_cmd(CanPinRs232Intf.CoilPulse, bytes([int(self.index), pulse_time]))
+        self.io_board.send_cmd(CanPinMessages.CoilPulse, bytes([int(self.index), pulse_time]))
 
     def timed_enable(self, pulse_settings: PulseSettings, hold_settings: HoldSettings):
         """Pulse and enable the coil for an explicit duration."""
@@ -155,7 +155,7 @@ class CanPinDriver(DriverPlatformInterface):
                           int(hold_settings.power * 254) if hold_settings else 0,
                           flags1,
                           flags2])
-        self.io_board.send_cmd(CanPinRs232Intf.ConfigureHardwareRule, data)
+        self.io_board.send_cmd(CanPinMessages.ConfigureHardwareRule, data)
 
     def clear_hw_rule(self):
         """Clear hw rule for driver."""
