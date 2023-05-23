@@ -367,7 +367,7 @@ canpin:
     interface: single|str|None
     baud: single|int|125000
     #boards: dict|str:int|None
-    boards: dict|str:subconfig(canpin_board)|
+    boards: dict|int:subconfig(canpin_board)|
     #send_length_after_command: single|bool|false
 canpin_board:
     board_index: single|int|

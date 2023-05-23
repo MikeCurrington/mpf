@@ -28,11 +28,11 @@ class CanPinBusCommunicator(can.Listener):
     def __init__(self, platform: "CanPinHardwarePlatform", port, interface, baud) -> None:
         """Initialise CanBus Connection to CanPin Hardware."""
     
-        platform.log.info("CanPinBusCommunicator port: " + str(port) + " interface: " + str(interface) + " baud: " + str(baud))
+        print("CanPinBusCommunicator port: " + str(port) + " interface: " + str(interface) + " baud: " + str(baud))
         #bustype='socketcan', 
         self.canbus = can.Bus(channel=port, interface=interface, ignore_config=False, receive_own_messages=False)
         self.ready_id=0
-        self.board_id = 0x97
+        self.board_id = 0xdffffffa
         self.boards = {}
 
         self.platform = platform
@@ -43,10 +43,11 @@ class CanPinBusCommunicator(can.Listener):
         self.canbus_notifier = can.Notifier(self.canbus, [printer, self])
 
         self.ready_id += 1
-        self.canbus.send( CanPinMessage(CanPinMessages.DeviceReady, [0,0,0,self.board_id&0xff,self.ready_id&0xff,self.ready_id>>8]) )
+        self.canbus.send( CanPinMessage(CanPinMessages.DeviceReady, [self.board_id&0xff,(self.board_id>>8)&0xff,(self.board_id>>16)&0xff,self.board_id>>24,self.ready_id&0xff,self.ready_id>>8]) )
+        await asyncio.sleep(10)
 
     def send_board_index(self, board_id, board_index):
-        self.canbus.send( CanPinMessage(CanPinMessages.AssignDeviceIndex, [self.board_id&0xff,(self.board_id>>8)&0xff,(self.board_id>>16)&0xff,board_id>>24,self.board_index]) )
+        self.canbus.send( CanPinMessage(CanPinMessages.AssignDeviceIndex, [board_id&0xff,(board_id>>8)&0xff,(board_id>>16)&0xff,board_id>>24,board_index]) )
 
     async def start_read_loop(self):
         """Start the read loop."""
@@ -60,21 +61,22 @@ class CanPinBusCommunicator(can.Listener):
             # msg.data (up to 8 bytes of data)
             message_id = msg.arbitration_id>>5
             recipient_id = msg.arbitration_id & 0x1f
+            print("on_message_received " + str(message_id) + "\n")
 
             if message_id == CanPinMessages.DeviceReady:
                 pass
             elif message_id == CanPinMessages.WelcomeNewHost:
-                host_id = msg.data[3] | (msg.data[2]<<8) | (msg.data[1]<<16) | (msg.data[0]<<24)
-                voter_id = msg.data[7] | (msg.data[6]<<8) | (msg.data[5]<<16) | (msg.data[4]<<24)
+                host_id = msg.data[0] | (msg.data[1]<<8) | (msg.data[2]<<16) | (msg.data[3]<<24)
+                voter_id = msg.data[4] | (msg.data[5]<<8) | (msg.data[6]<<16) | (msg.data[7]<<24)
                 if host_id != self.board_id:
-                    self.platform.log.debug(f'Expecting that we are the host (id {self.board_id}) but {voter_id} is voting for {host_id}')
+                    print(f'Expecting that we are the host (id {self.board_id}) but {voter_id} is voting for {host_id}')
                 else:
                     if not voter_id in self.boards:
                         self.boards[voter_id] = {}
-                        self.platform.log.debug(f'Registering board {voter_id}')
+                        print(f'Registering board {voter_id}')
                         self.platform.register_io_board(voter_id)
             else:
-                self.log.debug(f'Unhandled message_id {message_id}')
+                print(f'Unhandled message_id {message_id}')
 
     # def send_get_gen2_cfg_cmd(self):
     #     """Send get gen2 configuration message to find populated wing boards."""

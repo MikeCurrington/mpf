@@ -33,12 +33,13 @@ from mpf.core.logging import LogMixin
 class CanPinIoBoard:
     """IoBoard class for a single CANPIN board."""
 
-    __slots__ = [ "board_id", "switch_count", "firmware_version", "driver_count", "pixel_strip_count", "platform", "input_state_bits" ]
+    __slots__ = [ "board_id", "board_index", "switch_count", "firmware_version", "driver_count", "pixel_strip_count", "platform", "input_state_bits" ]
 
     # pylint: disable-msg=too-many-arguments
-    def __init__(self, board_id, switch_count, driver_count, pixel_strip_count, platform):
+    def __init__(self, board_id, board_index, switch_count, driver_count, pixel_strip_count, platform):
         """Initialise CanPinIoBoard."""
         self.board_id = board_id
+        self.board_index = board_index
         self.switch_count = switch_count
         self.firmware_version = None
         self.driver_count = driver_count
@@ -51,9 +52,10 @@ class CanPinIoBoard:
 
     def get_info_string(self) -> str:
         """Return description string."""
-        return "Board {} - Firmware: {} Switches: {} Drivers: {} Pixel strips: {}".format(
+        return "Board {} - Firmware: {} Index: {} Switches: {} Drivers: {} Pixel strips: {}".format(
             self.board_id,
             self.firmware_version,
+            self.board_index,
             self.switch_count,
             self.driver_count,
             self.pixel_strip_count
@@ -87,7 +89,7 @@ class CanPinDriver(DriverPlatformInterface):
 
         if self._recycle_time != recycle_time:
             self._recycle_time = recycle_time
-            self.io_board.send_cmd(CanPinRs232Intf.CoilSetRecycleTime,
+            self.io_board.send_cmd(CanPinMessages.CoilSetRecycleTime,
                                    bytes([int(self.index), recycle_time]))
 
     def configure_max_pulse_ms(self, max_pulse_time):
@@ -98,8 +100,8 @@ class CanPinDriver(DriverPlatformInterface):
             max_pulse_time = 0
         if max_pulse_time != self._max_pulse_time:
             self._max_pulse_time = max_pulse_time
-            self.io_board.send_cmd(CanPinRs232Intf.CoilSetMaxPulseTime,
-                                    bytes([int(self.index), max_pulse_time]))
+            self.io_board.send_cmd(CanPinMessages.CoilSetMaxPulseTime,
+                                   bytes([int(self.index), max_pulse_time]))
 
     def pulse(self, pulse_settings: PulseSettings):
         """Pulse driver."""
@@ -110,7 +112,7 @@ class CanPinDriver(DriverPlatformInterface):
             pulse_time = 254
         elif pulse_time < 0:
             pulse_time = 0
-        self.io_board.send_cmd(CanPinRs232Intf.CoilPulse, bytes([int(self.index), pulse_time]))
+        self.io_board.send_cmd(CanPinMessages.CoilPulse, bytes([int(self.index), pulse_time]))
 
     def timed_enable(self, pulse_settings: PulseSettings, hold_settings: HoldSettings):
         """Pulse and enable the coil for an explicit duration."""
@@ -197,7 +199,7 @@ class CanPinHardwarePlatform(SwitchPlatform, DriverPlatform, LogMixin):
 
     """Platform class for the CANPIN hardware controller."""
 
-    __slots__ = [ "config", "canbus_connection", "_watchdog_task", "hw_switch_data", "io_boards", "num_canpin_brd", "_poll_task", "_poll_response_received" ]
+    __slots__ = [ "config", "canbus_connection", "_watchdog_task", "hw_switch_data", "io_boards", "io_boards_by_id", "num_canpin_brd", "_poll_task", "_poll_response_received" ]
 
     def __init__(self, machine):
         """Initialise CanPin hardware platform.
@@ -217,6 +219,7 @@ class CanPinHardwarePlatform(SwitchPlatform, DriverPlatform, LogMixin):
         self.hw_switch_data = {}
         self.canbus_connection = None                       # type: CanPinBusCommunicator]
         self.io_boards = {}                                 # type: Dict[int, CanPinIoBoard]
+        self.io_boards_by_id = {}                           # type: Dict[int, CanPinIoBoard]
         
         # # Only including responses that should be received
         # self.canpin_commands = {
@@ -259,22 +262,22 @@ class CanPinHardwarePlatform(SwitchPlatform, DriverPlatform, LogMixin):
         This process will cause the CanPinBusCommunicator to become bus 'master' and to register themselves.
         """
         #port_chain_serial_map = {v: k for k, v in self.config['chains'].items()}
-        communicator = CanPinBusCommunicator(platform=self, port=self.config['port'], interface=self.config['interface'], baud=self.config['baud'])
-        await communicator.connect()
-
-    def register_processor_connection(self, communicator : CanPinBusCommunicator):
-        self.canbus_connection = communicator
+        self.canbus_connection = CanPinBusCommunicator(platform=self, port=self.config['port'], interface=self.config['interface'], baud=self.config['baud'])
+        await self.canbus_connection.connect()
 
     def register_io_board(self, board_id):
         """Create and register IO board if it is new.  Ok for board to be already registered. """
-        if board_id not in self.io_boards:
+        if board_id not in self.io_boards_by_id:
             if board_id not in self.config['boards']:
+                print(self.config['boards'])
                 raise AssertionError(f'Board connected to canbus that is not in config.  Board_id {board_id}')
             else:
                 board_config = self.config['boards'][board_id]
                 board_index = board_config['board_index']
-                self.io_boards[board_id] = CanPinIoBoard(board_index, len(board_config['input_pins']), len(board_config['output_pins']), len(board_config['led_pins']), self)
-                self.configure_io_board(board_id, self.io_boards[board_id])
+                io_board = CanPinIoBoard(board_id, board_index, len(board_config['input_pins']), len(board_config['output_pins']), len(board_config['led_pins']), self)
+                self.io_boards_by_id[board_id] = io_board
+                self.io_boards[board_index] = io_board
+                self.configure_io_board(board_id, io_board)
 
     def configure_io_board(self, board_id, io_board: CanPinIoBoard):
         """Send commands to setup this board"""
