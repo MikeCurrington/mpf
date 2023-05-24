@@ -14,7 +14,7 @@ from typing import Dict, Set, Optional
 
 from mpf.exceptions.runtime_error import MpfRuntimeError
 from mpf.platforms.canpin.canpin_bus import CanPinBusCommunicator
-from mpf.platforms.canpin.canpin_rs232_intf import CanPinRs232Intf
+from mpf.platforms.canpin.defines import CanPinMessages
 from mpf.platforms.base_serial_communicator import HEX_FORMAT
 
 from mpf.core.platform import SwitchPlatform, LightsPlatform, DriverPlatform, SwitchSettings, DriverSettings, \
@@ -61,6 +61,9 @@ class CanPinIoBoard:
             self.pixel_strip_count
         )
 
+    def send_cmd(self, command, data):
+        self.platform.send_cmd(command, self.board_index, data)
+
 
 class CanPinDriver(DriverPlatformInterface):
 
@@ -89,7 +92,7 @@ class CanPinDriver(DriverPlatformInterface):
 
         if self._recycle_time != recycle_time:
             self._recycle_time = recycle_time
-            self.io_board.send_cmd(CanPinMessages.CoilSetRecycleTime,
+            self.io_board.send_cmd(CanPinMessages.SetRecycleTime,
                                    bytes([int(self.index), recycle_time]))
 
     def configure_max_pulse_ms(self, max_pulse_time):
@@ -100,8 +103,8 @@ class CanPinDriver(DriverPlatformInterface):
             max_pulse_time = 0
         if max_pulse_time != self._max_pulse_time:
             self._max_pulse_time = max_pulse_time
-            self.io_board.send_cmd(CanPinMessages.CoilSetMaxPulseTime,
-                                   bytes([int(self.index), max_pulse_time]))
+            self.io_board.send_cmd(CanPinMessages.SetMaxPulseTime,
+                                    bytes([int(self.index), max_pulse_time]))
 
     def pulse(self, pulse_settings: PulseSettings):
         """Pulse driver."""
@@ -157,7 +160,7 @@ class CanPinDriver(DriverPlatformInterface):
                           int(hold_settings.power * 254) if hold_settings else 0,
                           flags1,
                           flags2])
-        self.io_board.send_cmd(CanPinRs232Intf.ConfigureHardwareRule, data)
+        self.io_board.send_cmd(CanPinMessages.ConfigureHardwareRule, data)
 
     def clear_hw_rule(self):
         """Clear hw rule for driver."""
@@ -174,7 +177,7 @@ class CanPinDriver(DriverPlatformInterface):
                           0,
                           0,
                           ])
-        self.io_board.send_cmd(CanPinRs232Intf.ConfigureHardwareRule, data)
+        self.io_board.send_cmd(CanPinMessages.ConfigureHardwareRule, data)
 
 
 class CanPinSwitch(SwitchPlatformInterface):
@@ -277,11 +280,15 @@ class CanPinHardwarePlatform(SwitchPlatform, DriverPlatform, LogMixin):
                 io_board = CanPinIoBoard(board_id, board_index, len(board_config['input_pins']), len(board_config['output_pins']), len(board_config['led_pins']), self)
                 self.io_boards_by_id[board_id] = io_board
                 self.io_boards[board_index] = io_board
-                self.configure_io_board(board_id, io_board)
+                self.configure_io_board(io_board)
 
-    def configure_io_board(self, board_id, io_board: CanPinIoBoard):
+    def configure_io_board(self, io_board: CanPinIoBoard):
         """Send commands to setup this board"""
         self.canbus_connection.send_board_index(io_board.board_id, io_board.board_index)
+
+    def send_cmd(self, command, target_board_index, data):
+        """Send commands to a given board"""
+        self.canbus_connection.send_cmd(command, target_board_index, data)
 
     def clear_hw_rule(self, switch: SwitchSettings, coil: DriverSettings):
         """Clear hw rule for driver."""
