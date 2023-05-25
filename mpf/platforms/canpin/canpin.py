@@ -295,11 +295,8 @@ class CanPinHardwarePlatform(SwitchPlatform, DriverPlatform, LogMixin):
                 io_board = CanPinIoBoard(board_id, board_index, len(board_config['input_pins']), len(board_config['output_pins']), len(board_config['led_pins']), self)
                 self.io_boards_by_id[board_id] = io_board
                 self.io_boards[board_index] = io_board
-                self.configure_io_board(io_board)
-
-    def configure_io_board(self, io_board: CanPinIoBoard):
-        """Send commands to setup this board"""
-        self.canbus_connection.send_board_index(io_board.board_id, io_board.board_index)
+                """Send commands to setup this board"""
+                io_board.send_board_config(board_config)
 
     def send_cmd(self, command, target_board_index, data):
         """Send commands to a given board"""
