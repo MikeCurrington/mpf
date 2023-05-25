@@ -76,6 +76,7 @@ class CanPinIoBoard:
         self.send_cmd(CanPinMessages.StartGpio, [])
 
     def send_cmd(self, command, data):
+        print(f'board send_cmd cmd {command} board_index {self.board_index} data {data}')
         self.platform.send_cmd(command, self.board_index, data)
 
 

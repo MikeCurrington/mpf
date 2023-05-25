@@ -32,7 +32,7 @@ class CanPinBusCommunicator(can.Listener):
         #bustype='socketcan', 
         self.canbus = can.Bus(channel=port, interface=interface, ignore_config=False, receive_own_messages=False)
         self.ready_id=0
-        self.board_id = 0xdffffff7
+        self.board_id = 0xdffffff6
         self.boards = {}
 
         self.platform = platform
