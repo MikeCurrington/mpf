@@ -46,9 +46,6 @@ class CanPinBusCommunicator(can.Listener):
         self.send_cmd( CanPinMessages.DeviceReady, 0, [self.board_id&0xff,(self.board_id>>8)&0xff,(self.board_id>>16)&0xff,self.board_id>>24,self.ready_id&0xff,self.ready_id>>8])
         await asyncio.sleep(10)
 
-    def send_board_index(self, board_id, board_index):
-        send_cmd( CanPinMessages.AssignDeviceIndex, 0, [board_id&0xff,(board_id>>8)&0xff,(board_id>>16)&0xff,board_id>>24,board_index])
-
     def send_cmd( self, command, board_index, data):
         self.canbus.send( CanPinMessage(command, board_index, data) )
 

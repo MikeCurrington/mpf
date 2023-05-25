@@ -10,7 +10,7 @@ class CanPinMessages:
     GetNodeCapabilities = 4
 
     SetBoardInputPins = 5
-    SetBoardOutputPins = 6
+    SetBoardOutputPins = 6  
     SetBoardLedPins = 7
     StartGpio = 8             # Request to 'apply' the input/output/led pins and start processing.
 

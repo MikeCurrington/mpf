@@ -61,6 +61,20 @@ class CanPinIoBoard:
             self.pixel_strip_count
         )
 
+    def send_config_values(self, message, pin_numbers):
+        pins = bytearray()
+        for pin in pin_numbers:
+            pins.append(pin)
+        for pin_start_idx in range(0, len(pins), 8):
+            self.send_cmd( message, pins[pin_start_idx:pin_start_idx+8] )
+
+    def send_board_config(self, board_config):
+        self.platform.send_cmd( CanPinMessages.AssignDeviceIndex, 0, [self.board_id&0xff,(self.board_id>>8)&0xff,(self.board_id>>16)&0xff,self.board_id>>24,self.board_index])
+        self.send_config_values(CanPinMessages.SetBoardInputPins, board_config['input_pins'])
+        self.send_config_values(CanPinMessages.SetBoardOutputPins, board_config['output_pins'])
+        self.send_config_values(CanPinMessages.SetBoardLedPins, board_config['led_pins'])
+        self.send_cmd(CanPinMessages.StartGpio, [])
+
     def send_cmd(self, command, data):
         self.platform.send_cmd(command, self.board_index, data)
 
