@@ -24,10 +24,8 @@ from mpf.platforms.interfaces.switch_platform_interface import SwitchPlatformInt
 from mpf.core.utility_functions import Util
 from mpf.core.logging import LogMixin
 
-# from mpf.platforms.system11 import System11OverlayPlatform, System11Driver
-
 # pylint: disable-msg=too-many-instance-attributes
-# from mpf.platforms.interfaces.light_platform_interface import LightPlatformInterface
+from mpf.platforms.interfaces.light_platform_interface import LightPlatformInterface
 
 
 class CanPinIoBoard:
@@ -62,23 +60,125 @@ class CanPinIoBoard:
         )
 
     def send_config_values(self, message, pin_numbers):
-        pins = bytearray()
-        pins.append(len(pin_numbers))
-        for pin in pin_numbers:
-            pins.append(pin)
-        for pin_start_idx in range(0, len(pins), 7):
-            self.send_cmd( message, pin_start_idx, pins[pin_start_idx:pin_start_idx+7] )
+        data = bytearray([0])
+        for i, pin in enumerate(pin_numbers):
+            data.append(pin)
+            if len(data)==8:
+                self.send_cmd( message, data )
+                data = bytearray([i+1])
+        if len(data)>1:
+            self.send_cmd( message, data )
 
     def send_board_config(self, board_config):
         self.platform.send_cmd( CanPinMessages.AssignDeviceIndex, 0, [self.board_id&0xff,(self.board_id>>8)&0xff,(self.board_id>>16)&0xff,self.board_id>>24,self.board_index])
         self.send_config_values(CanPinMessages.SetBoardInputPins, board_config['input_pins'])
         self.send_config_values(CanPinMessages.SetBoardOutputPins, board_config['output_pins'])
         self.send_config_values(CanPinMessages.SetBoardLedPins, board_config['led_pins'])
+        self.send_config_values(CanPinMessages.SetBoardLedCounts, board_config['led_counts'])
         self.send_cmd(CanPinMessages.StartGpio, [])
 
     def send_cmd(self, command, data):
         print(f'board send_cmd cmd {command} board_index {self.board_index} data {data}')
         self.platform.send_cmd(command, self.board_index, data)
+
+
+class CanPinLed(LightPlatformInterface):
+
+    """ Class for a canpin led """
+
+    __slots__ = ["number", "number_int", "dirty", "hardware_fade_ms", "log", "channels", "machine"]
+
+    def __init__(self, number: str, hardware_fade_ms: int, machine) -> None:
+        """Initialise CanPin LED."""
+        self.number_int = int(number)
+        self.number = Util.int_to_hex_string(self.number_int)
+        self.dirty = True
+        self.machine = machine
+        self.hardware_fade_ms = hardware_fade_ms
+        self.log = logging.getLogger('CNAPINLED')
+        self.channels = [None, None, None]      # type: List[Optional[CanPinLedChannel]]
+        # All CanPin LEDs are 3 element RGB
+        self.log.debug("Creating CanPin RGB LED at hardware address: %s", self.number)
+
+    def add_channel(self, channel_num: int, channel_obj: "CanPinLedChannel"):
+        """Add channel to LED."""
+        self.channels[channel_num] = channel_obj
+
+    @property
+    def current_color(self):
+        """Return current color."""
+        result = bytearray()
+        self.dirty = False
+        current_time = self.machine.clock.get_time()
+        # send this as grb because the hardware will twist it again
+        for channel in self.channels:
+            brightness, _, done = channel.get_fade_and_brightness(current_time)
+            result.append( int(brightness * 255) )
+            if not done:
+                self.dirty = True
+        return result
+
+
+class CanPinLedChannel(LightPlatformInterface):
+
+    """Represents a single RGB LED channel connected to the CanPin hardware platform."""
+
+    __slots__ = ["led", "channel", "_current_fade", "_last_brightness"]
+
+    def __init__(self, led: CanPinLed, channel) -> None:
+        """Initialise LED."""
+        super().__init__("{}-{}".format(led.number, channel))
+        self.led = led
+        self.channel = int(channel)
+        self._current_fade = (0, -1, 0, -1)
+        self._last_brightness = None
+
+    def set_fade(self, start_brightness, start_time, target_brightness, target_time):
+        """Set brightness via callback."""
+        self.led.dirty = True
+        self._current_fade = (start_brightness, start_time, target_brightness, target_time)
+        self._last_brightness = None
+
+    def get_fade_and_brightness(self, current_time):
+        """Return fade + brightness and mark as clean if this is it."""
+        if self._last_brightness:
+            return self._last_brightness, 0, True
+        max_fade_ms = self.led.hardware_fade_ms
+        start_brightness, start_time, target_brightness, target_time = self._current_fade
+        fade_ms = int((target_time - current_time) * 1000.0)
+        if fade_ms > max_fade_ms >= 0:
+            fade_ms = max_fade_ms
+            ratio = ((current_time + (fade_ms / 1000.0) - start_time) /
+                     (target_time - start_time))
+            brightness = start_brightness + (target_brightness - start_brightness) * ratio
+            done = False
+        else:
+            if fade_ms < 0:
+                fade_ms = 0
+            brightness = target_brightness
+            self._last_brightness = brightness
+            done = True
+
+        return brightness, fade_ms, done
+
+    def get_board_name(self):
+        """Return the board of this light."""
+        return "FAST LED CPU"
+
+    def is_successor_of(self, other):
+        """Return true if the other light has the previous number."""
+        return self.led.number_int * 3 + self.channel == other.led.number_int * 3 + other.channel + 1
+
+    def get_successor_number(self):
+        """Return next number."""
+        if self.channel == 2:
+            return "{}-0".format(self.led.number_int + 1)
+
+        return "{}-{}".format(self.led.number_int, self.channel + 1)
+
+    def __lt__(self, other):
+        """Order lights by their order on the hardware."""
+        return (self.led.number_int, self.channel) < (other.led.number_int, other.channel)
 
 
 class CanPinDriver(DriverPlatformInterface):
@@ -298,6 +398,10 @@ class CanPinHardwarePlatform(SwitchPlatform, DriverPlatform, LogMixin):
                 self.io_boards[board_index] = io_board
                 """Send commands to setup this board"""
                 io_board.send_board_config(board_config)
+
+                """Setup initial switch data (assume all switches off until told otherwise?)"""
+                for switch in range(io_board.switch_count):
+                  self.hw_switch_data[str(board_index) + '-' + str(switch)] = 0
 
     def send_cmd(self, command, target_board_index, data):
         """Send commands to a given board"""
@@ -599,12 +703,64 @@ class CanPinHardwarePlatform(SwitchPlatform, DriverPlatform, LogMixin):
 
         io_board = self.io_boards[board]
 
-        if number not in self.hw_switch_data:
-            raise AssertionError("Invalid switch number {}. Platform reports the following switches as "
-                                 "valid: {}".format(number, list(self.hw_switch_data.keys())))
+        #if number not in self.hw_switch_data:
+        #    raise AssertionError("Invalid switch number {}. Platform reports the following switches as "
+        #                         "valid: {}".format(number, list(self.hw_switch_data.keys())))
 
         return CanPinSwitch(config=config, io_board=io_board, number=number, platform=self)
+
+    def configure_light(self, number, subtype, config, platform_settings) -> LightPlatformInterface:
+        """Configure an LED."""
+        if not subtype or subtype == "led":
+            if not self.flag_led_tick_registered:
+                # Update leds every frame
+                self._led_task = self.machine.clock.schedule_interval(
+                    self.update_leds, 1 / self.machine.config['mpf']['default_light_hw_update_hz'])
+                self.flag_led_tick_registered = True
+
+            try:
+                number_str, channel = number.split("-")
+            except ValueError as e:
+                self.raise_config_error("Light syntax is number-channel (but was \"{}\") for light {}.".format(
+                    number, config.name), 9, source_exception=e)
+                raise
+            if number_str not in self.canpin_leds:
+                self.canpin_leds[number_str] = CanPinLed(
+                    number_str, int(self.config['hardware_led_fade_time']), self.machine)
+            canpin_led_channel = CanPinLedChannel(self.canpin_leds[number_str], channel)
+            self.canpin_leds[number_str].add_channel(int(channel), canpin_led_channel)
+
+            return canpin_led_channel
+
+        raise AssertionError("Unknown subtype {}".format(subtype))
+
+    def parse_light_number_to_channels(self, number: str, subtype: str):
+        """Parse light channels from number string."""
+        if not subtype or subtype == "led":
+            # if the LED number is in <channel> - <led> format, convert it to a
+            # CanPin hardware number
+            if '-' in str(number):
+                num = str(number).split('-')
+                index = (int(num[0]) * 64) + int(num[1])
+            else:
+                index = int(number)
+            return [
+                {"number": f"{index}-0"},
+                {"number": f"{index}-1"},
+                {"number": f"{index}-2"},
+            ]
+
+        raise AssertionError(f"Unknown subtype {subtype}")
+
+    def update_leds(self):
+        """Update all the LEDs connected to a CanPin controller."""
+        dirty_leds = [led for led in self.canpin_leds.values() if led.dirty]
+
+        for led in dirty_leds:
+            msg = 'RS:' + ','.join(["%s%s" % (led.number, led.current_color) for led in dirty_leds])
+            # self.send_cmd(CanPinMessages.SetLedColor,  )
 
     async def get_hw_switch_states(self):
         """Return hardware states."""
         return self.hw_switch_data
+

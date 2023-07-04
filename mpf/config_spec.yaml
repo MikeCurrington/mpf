@@ -374,6 +374,7 @@ canpin_board:
     input_pins: list|int|None
     output_pins: list|int|None
     led_pins: list|int|None
+    led_counts: list|int|None
 coil_player:
     __valid_in__: machine, mode, show
     __type__: config_player
