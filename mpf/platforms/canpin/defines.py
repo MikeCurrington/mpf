@@ -12,7 +12,7 @@ class CanPinMessages:
     SetBoardInputPins = 5
     SetBoardOutputPins = 6  
     SetBoardLedPins = 7
-    SetBoardLedPins = 8
+    SetBoardLedCounts = 8
     StartGpio = 9             # Request to 'apply' the input/output/led pins and start processing.
 
     ChangedInputs = 10        # Sent to host by all other boards when inputs change
